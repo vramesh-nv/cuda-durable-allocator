@@ -1,0 +1,51 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+
+# FUSE mount points
+test_mount/
+*_mount/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# CUDA compilation cache
+*.fatbin
+*.cubin
+*.ptx
+
+# Backup files
+*.bak
+*.backup
+
+# Core dumps
+core
+core.*
+
+# Test output
+test_output/
+test_results/
+
+# Local configuration
+local.conf
+local.mk
