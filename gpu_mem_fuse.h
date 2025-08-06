@@ -17,6 +17,7 @@
 typedef struct {
     char path[MAX_PATH_LEN];
     CUmemGenericAllocationHandle gpu_handle;  // 0 means no GPU memory allocated
+    CUmemFabricHandle fabric_handle;          // 0 means no fabric handle allocated
     size_t size;                              // 0 means no GPU memory allocated
     time_t created_time;
     time_t access_time;
@@ -34,7 +35,7 @@ typedef struct {
 
 // Function declarations
 int gpu_fuse_init_cuda(gpu_fuse_context_t *ctx);
-gpu_file_t *gpu_fuse_get_file(gpu_fuse_context_t *ctx, const char *path);
+//gpu_file_t *gpu_fuse_get_file(gpu_fuse_context_t *ctx, const char *path);
 int gpu_fuse_cleanup_gpu_memory(gpu_file_t *file);
 
 #endif // GPU_MEM_FUSE_H

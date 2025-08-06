@@ -39,7 +39,7 @@ int gpu_fuse_init_cuda(gpu_fuse_context_t *ctx)
 }
 
 // Helper function to get file by path
-gpu_file_t *gpu_fuse_get_file(gpu_fuse_context_t *ctx, const char *path)
+gpu_file_t *gpu_fuse_get_file_from_path(gpu_fuse_context_t *ctx, const char *path)
 {
     pthread_mutex_lock(&ctx->global_mutex);
     gpu_file_t *file = g_hash_table_lookup(ctx->files, path);
@@ -76,7 +76,7 @@ static int gpu_fuse_getattr(const char *path, struct stat *stbuf, struct fuse_fi
         return 0;
     }
     
-    gpu_file_t *file = gpu_fuse_get_file(g_gpu_ctx, path);
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
     if (file) {
         pthread_mutex_lock(&file->mutex);
         stbuf->st_mode = S_IFREG | 0644;
@@ -129,10 +129,10 @@ static int gpu_fuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 static int gpu_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     UNUSED(mode);
-    UNUSED(fi);
+    //UNUSED(fi);
     
     // Check if file already exists
-    gpu_file_t *existing = gpu_fuse_get_file(g_gpu_ctx, path);
+    gpu_file_t *existing = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
     if (existing) {
         printf("File %s already exists\n", path);
         return 0;  // File already exists, return success
@@ -158,7 +158,7 @@ static int gpu_fuse_create(const char *path, mode_t mode, struct fuse_file_info 
     char *path_key = strdup(path);
     g_hash_table_insert(g_gpu_ctx->files, path_key, new_file);
     pthread_mutex_unlock(&g_gpu_ctx->global_mutex);
-    
+
     printf("Created file entry %s (no GPU memory allocated yet)\n", path);
     return 0;
 }
@@ -175,7 +175,7 @@ static int gpu_fuse_truncate(const char *path, off_t size, struct fuse_file_info
     }
     
     // Get the file
-    gpu_file_t *file = gpu_fuse_get_file(g_gpu_ctx, path);
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
     if (!file) {
         return -ENOENT;  // File doesn't exist
     }
@@ -210,6 +210,7 @@ static int gpu_fuse_truncate(const char *path, off_t size, struct fuse_file_info
         props.type = CU_MEM_ALLOCATION_TYPE_PINNED;
         props.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
         props.location.id = g_gpu_ctx->cuda_device;
+        props.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
         
         CUmemGenericAllocationHandle gpu_handle;
         CUresult result = cuMemCreate(&gpu_handle, size, &props, 0);
@@ -218,7 +219,16 @@ static int gpu_fuse_truncate(const char *path, off_t size, struct fuse_file_info
             pthread_mutex_unlock(&file->mutex);
             return -ENOMEM;
         }
-        
+
+        CUmemFabricHandle fabricHandle;
+        result = cuMemExportToShareableHandle((void *)&fabricHandle, gpu_handle, CU_MEM_HANDLE_TYPE_FABRIC, 0);
+        if (result != CUDA_SUCCESS) {
+            printf("cuMemExportToShareableHandle failed: %d\n", result);
+            pthread_mutex_unlock(&file->mutex);
+            return -ENOMEM;
+        }
+
+        memcpy(&file->fabric_handle, &fabricHandle, sizeof(CUmemFabricHandle));
         file->gpu_handle = gpu_handle;
         file->size = size;
         file->modify_time = time(NULL);  // Update modification time
@@ -253,7 +263,7 @@ static void *gpu_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 static int gpu_fuse_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) {
     UNUSED(fi);
     
-    gpu_file_t *file = gpu_fuse_get_file(g_gpu_ctx, path);
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
     if (!file) {
         return -ENOENT;
     }
@@ -279,6 +289,115 @@ static int gpu_fuse_utimens(const char *path, const struct timespec ts[2], struc
     
     printf("Updated timestamps for %s\n", path);
     return 0;
+}
+
+// FUSE open - open file for reading/writing
+static int gpu_fuse_open(const char *path, struct fuse_file_info *fi)
+{
+    printf("gpu_fuse_open called: path=%s, flags=%d\n", path, fi->flags);
+    
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
+    if (!file) {
+        return -ENOENT;
+    }
+    
+    // File exists, allow opening
+    return 0;
+}
+
+// FUSE getxattr - get extended attributes
+static int gpu_fuse_getxattr(const char *path, const char *name, char *value, size_t size)
+{
+    printf("gpu_fuse_getxattr called: path=%s, name=%s, size=%zu\n", path, name, size);
+    
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
+    if (!file) {
+        return -ENOENT;
+    }
+    
+    pthread_mutex_lock(&file->mutex);
+    
+    if (strcmp(name, "user.fabric_handle") == 0) {
+        // Return the fabric handle
+        if (file->gpu_handle == 0) {
+            pthread_mutex_unlock(&file->mutex);
+            return -ENODATA;  // No GPU allocation
+        }
+        
+        if (size == 0) {
+            // Caller is asking for the size of the attribute
+            pthread_mutex_unlock(&file->mutex);
+            return sizeof(CUmemFabricHandle);
+        }
+        
+        if (size < sizeof(CUmemFabricHandle)) {
+            pthread_mutex_unlock(&file->mutex);
+            return -ERANGE;  // Buffer too small
+        }
+        
+        memcpy(value, &file->fabric_handle, sizeof(CUmemFabricHandle));
+        pthread_mutex_unlock(&file->mutex);
+        printf("Returned fabric handle via getxattr: %zu bytes\n", sizeof(CUmemFabricHandle));
+        return sizeof(CUmemFabricHandle);
+        
+    } else if (strcmp(name, "user.allocation_size") == 0) {
+        // Return the allocation size as a string
+        if (file->gpu_handle == 0) {
+            pthread_mutex_unlock(&file->mutex);
+            return -ENODATA;  // No GPU allocation
+        }
+        
+        char size_str[32];
+        int len = snprintf(size_str, sizeof(size_str), "%zu", file->size);
+        
+        if (size == 0) {
+            // Caller is asking for the size of the attribute
+            pthread_mutex_unlock(&file->mutex);
+            return len;
+        }
+        
+        if (size < (size_t)len + 1) {
+            pthread_mutex_unlock(&file->mutex);
+            return -ERANGE;  // Buffer too small
+        }
+        
+        strcpy(value, size_str);
+        pthread_mutex_unlock(&file->mutex);
+        printf("Returned allocation size via getxattr: %s bytes\n", size_str);
+        return len;
+        
+    }
+    
+    pthread_mutex_unlock(&file->mutex);
+    return -ENODATA;  // Attribute not found
+}
+
+// FUSE listxattr - list extended attributes
+static int gpu_fuse_listxattr(const char *path, char *list, size_t size)
+{
+    printf("gpu_fuse_listxattr called: path=%s, size=%zu\n", path, size);
+    
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
+    if (!file) {
+        return -ENOENT;
+    }
+    
+    const char *attrs = "user.fabric_handle\0user.allocation_size\0";
+    size_t attrs_len = strlen("user.fabric_handle") + 1 + 
+                       strlen("user.allocation_size") + 1;
+    
+    if (size == 0) {
+        // Caller is asking for the size needed
+        return attrs_len;
+    }
+    
+    if (size < attrs_len) {
+        return -ERANGE;  // Buffer too small
+    }
+    
+    memcpy(list, attrs, attrs_len);
+    printf("Listed extended attributes: fabric_handle, allocation_size\n");
+    return attrs_len;
 }
 
 // FUSE destroy - cleanup filesystem
@@ -315,15 +434,53 @@ static void gpu_fuse_destroy(void *private_data)
     }
 }
 
+// FUSE read - read from file
+static int gpu_fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    UNUSED(fi);
+    
+    printf("gpu_fuse_read called: path=%s, size=%zu, offset=%ld\n", path, size, offset);
+    gpu_file_t *file = gpu_fuse_get_file_from_path(g_gpu_ctx, path);
+    if (!file) {
+        return -ENOENT;
+    }
+
+    // Check if GPU memory is allocated
+    if (file->gpu_handle == 0) {
+        printf("No GPU memory allocated for %s\n", path);
+        return -ENODATA;
+    }
+
+    // Only support reading the fabric handle at offset 0
+    if (offset != 0) {
+        return 0;  // EOF for any offset > 0
+    }
+
+    // Read the fabric handle
+    if (size >= sizeof(CUmemFabricHandle)) {
+        memcpy(buf, &file->fabric_handle, sizeof(CUmemFabricHandle));
+        printf("Read fabric handle for %s: %zu bytes\n", path, sizeof(CUmemFabricHandle));
+        return sizeof(CUmemFabricHandle);  // Return actual bytes read
+    } else {
+        // Partial read not supported for fabric handle
+        return -EINVAL;
+    }
+}
+
+
+
 // FUSE operations structure - minimal set needed for create + truncate workflow
 static struct fuse_operations gpu_fuse_ops = {
     .getattr    = gpu_fuse_getattr,  // Required to check if file exists
     .readdir    = gpu_fuse_readdir,  // Required for ls to work
     .create     = gpu_fuse_create,   // Required to create files
+    .open       = gpu_fuse_open,     // Required to open files for reading/writing
     .truncate   = gpu_fuse_truncate, // Required for truncate -s SIZE
     .utimens    = gpu_fuse_utimens,  // Required to avoid touch warnings
+    .getxattr   = gpu_fuse_getxattr, // Get extended attributes (fabric handle, size)
+    .listxattr  = gpu_fuse_listxattr,// List available extended attributes
     .init       = gpu_fuse_init,     // Required for filesystem initialization
     .destroy    = gpu_fuse_destroy,  // Required for cleanup
+    .read       = gpu_fuse_read,     // Required for read
 };
 
 // Main function

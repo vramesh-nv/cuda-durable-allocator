@@ -1,5 +1,7 @@
 CC = gcc
+NVCC = nvcc
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DFUSE_USE_VERSION=31
+NVCCFLAGS = -std=c++11 -Xcompiler -fPIC
 LDFLAGS = -lfuse3 -lglib-2.0 -lcuda -lcudart -lpthread -L/usr/local/cuda/lib64
 
 # Use pkg-config for proper dependency management
@@ -12,8 +14,8 @@ SOURCES = gpu_mem_fuse.c
 OBJECTS = $(SOURCES:%.c=$(BUILDDIR)/%.o)
 TARGET = $(BUILDDIR)/gpu_mem_fuse
 
-# Test client
-TEST_CLIENT_SRC = test_client.c
+# Test client (CUDA)
+TEST_CLIENT_SRC = test_client.cu
 TEST_CLIENT_OBJ = $(BUILDDIR)/test_client.o
 TEST_CLIENT_TARGET = $(BUILDDIR)/test_client
 
@@ -25,10 +27,13 @@ $(TARGET): $(OBJECTS) | $(BUILDDIR)
 	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
 
 $(TEST_CLIENT_TARGET): $(TEST_CLIENT_OBJ) | $(BUILDDIR)
-	$(CC) $(TEST_CLIENT_OBJ) -o $@
+	$(NVCC) $(TEST_CLIENT_OBJ) -o $@ $(LDFLAGS)
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $(CUDA_INCLUDES) -c $< -o $@
+
+$(BUILDDIR)/test_client.o: $(SRCDIR)/test_client.cu | $(BUILDDIR)
+	$(NVCC) $(NVCCFLAGS) $(CUDA_INCLUDES) -c $< -o $@
 
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
