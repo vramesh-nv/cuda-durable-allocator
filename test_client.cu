@@ -141,22 +141,13 @@ int test_parent_process() {
         }
     }
 
-    fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        print_error("open for read");
-        return -1;
-    }
-
-    // 5. Get the fabric handle
     CUmemFabricHandle fabric_handle;
-    ssize_t bytes_read = read(fd, &fabric_handle, sizeof(CUmemFabricHandle));
+    ssize_t bytes_read = getxattr(path, "user.fabric_handle", &fabric_handle, sizeof(CUmemFabricHandle));
     if (bytes_read != sizeof(CUmemFabricHandle)) {
-        printf("Read failed: expected %zu bytes, got %zd bytes\n", sizeof(CUmemFabricHandle), bytes_read);
-        print_error("read");
-        close(fd);
+        printf("getxattr failed: expected %zu bytes, got %zd bytes\n", sizeof(CUmemFabricHandle), bytes_read);
+        print_error("getxattr");
         return -1;
     }
-    close(fd);
     
     printf("4. Successfully read fabric handle (%zu bytes)\n", sizeof(CUmemFabricHandle));
     
@@ -210,23 +201,13 @@ int test_child_process() {
     printf("   Child sees allocation size: %s bytes (%.2f MB)\n", 
            size_str, allocation_size / (1024.0 * 1024.0));
 
-    // 3. Open file for reading the fabric handle
-    printf("3. Opening file for reading fabric handle...\n");
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        print_error("open for read");
-        return -1;
-    }
-
     CUmemFabricHandle fabric_handle;
-    ssize_t bytes_read = read(fd, &fabric_handle, sizeof(CUmemFabricHandle));
+    ssize_t bytes_read = getxattr(path, "user.fabric_handle", &fabric_handle, sizeof(CUmemFabricHandle));
     if (bytes_read != sizeof(CUmemFabricHandle)) {
-        printf("Read failed: expected %zu bytes, got %zd bytes\n", sizeof(CUmemFabricHandle), bytes_read);
-        print_error("read");
-        close(fd);
+        printf("getxattr failed: expected %zu bytes, got %zd bytes\n", sizeof(CUmemFabricHandle), bytes_read);
+        print_error("getxattr");
         return -1;
     }
-    close(fd);
     
     printf("4. Successfully read fabric handle (%zu bytes)\n", sizeof(CUmemFabricHandle));
     

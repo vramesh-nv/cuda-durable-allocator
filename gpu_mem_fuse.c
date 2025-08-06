@@ -364,8 +364,7 @@ static int gpu_fuse_getxattr(const char *path, const char *name, char *value, si
         strcpy(value, size_str);
         pthread_mutex_unlock(&file->mutex);
         printf("Returned allocation size via getxattr: %s bytes\n", size_str);
-        return len;
-        
+        return len;  
     }
     
     pthread_mutex_unlock(&file->mutex);
@@ -435,6 +434,7 @@ static void gpu_fuse_destroy(void *private_data)
 }
 
 // FUSE read - read from file
+// Probably not needed since we can use getxattr to get the fabric handle. This is just for testing.
 static int gpu_fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     UNUSED(fi);
     
